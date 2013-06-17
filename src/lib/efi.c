@@ -43,8 +43,7 @@
 #include "scsi_ioctls.h"
 #include "disk.h"
 #include "efibootmgr.h"
-#include "efivars_procfs.h"
-#include "efivars_sysfs.h"
+#include "efivars_efivarfs.h"
 #include "list.h"
 
 static struct efivar_kernel_calls *fs_kernel_calls;
@@ -73,29 +72,21 @@ efi_guid_unparse(efi_guid_t *guid, char *out)
 void
 set_fs_kernel_calls()
 {
-	char name[PATH_MAX];
-	DIR *dir;
-	snprintf(name, PATH_MAX, "%s", SYSFS_DIR_EFI_VARS);
-	dir = opendir(name);
-	if (dir) {
-		closedir(dir);
-		fs_kernel_calls = &sysfs_kernel_calls;
-		return;
-	}
+	char filename[PATH_MAX];
+        int fd;
 
-	snprintf(name, PATH_MAX, "%s", PROCFS_DIR_EFI_VARS);
-	dir = opendir(name);
-	if (dir) {
-		closedir(dir);
-		fs_kernel_calls = &procfs_kernel_calls;
-		return;
-	}
-	fprintf(stderr, "Fatal: Couldn't open either sysfs or procfs directories for accessing EFI variables.\n");
-	fprintf(stderr, "Try 'modprobe efivars' as root.\n");
-	exit(1);
+	snprintf(filename, PATH_MAX -1, "%s/%s", EFIVARFS_DIR_EFI_VARS, 
+                       "ConOut-8be4df61-93ca-11d2-aa0d-00e098032b8c" );
+        fd = open (filename, O_RDONLY);
+        if (fd == -1) {
+	    fprintf(stderr, "FATAL: The efivarfs filesystem does not appear to be mounted.\n");
+	    exit(1);
+        }
+
+        close(fd);
+
+        fs_kernel_calls = &efivarfs_kernel_calls;
 }
-
-
 
 static efi_status_t
 write_variable_to_file(efi_variable_t *var)
@@ -767,15 +758,24 @@ make_linux_efi_variable(efi_variable_t *var,
 {
 	efi_guid_t guid = EFI_GLOBAL_VARIABLE;
 	char buffer[16];
+        char *bufferN;
+        char *bufferD;
 	unsigned char *optional_data=NULL;
 	unsigned long load_option_size = 0, opt_data_size=0;
+        int len;
 
-	memset(buffer,    0, sizeof(buffer));
-
+	memset(buffer, 0, sizeof(buffer));
 	/* VariableName needs to be BootXXXX */
 	sprintf(buffer, "Boot%04X", free_number);
+        len = strlen(buffer);
 
-	efichar_from_char(var->VariableName, buffer, 1024);
+        bufferN = malloc(sizeof(efi_char16_t) *(len + 1));
+        if (!bufferN) {
+            fprintf(stderr, "ERROR - no buffer malloc'ed\n");
+            exit(1);
+        }
+        var->VariableName = bufferN;
+	efichar_from_char((efi_char16_t *)var->VariableName, buffer, 1024);
 
 	memcpy(&(var->VendorGuid), &guid, sizeof(guid));
 	var->Attributes =
@@ -783,7 +783,14 @@ make_linux_efi_variable(efi_variable_t *var,
 		EFI_VARIABLE_BOOTSERVICE_ACCESS |
 		EFI_VARIABLE_RUNTIME_ACCESS;
 
-	/* Set Data[] and DataSize */
+	/* FPM Hack - Set Data[] and DataSize */
+        bufferD = malloc(sizeof(efi_char16_t) * 1024);
+        if (!bufferD) {
+            fprintf(stderr, "ERROR - no buffer malloc'ed\n");
+            free(bufferN);
+            exit(1);
+        }
+        var->Data = bufferD;
 
 	load_option_size =  make_linux_load_option(var->Data);
 
@@ -797,14 +804,15 @@ make_linux_efi_variable(efi_variable_t *var,
 	return var->DataSize;
 }
 
-
 int
 variable_to_name(efi_variable_t *var, char *name)
 {
 	char *p = name;
-	efichar_to_char(p, var->VariableName, PATH_MAX);
+
+	efichar_to_char(p, (efi_char16_t *)var->VariableName, PATH_MAX);
 	p += strlen(p);
 	p += sprintf(p, "-");
 	efi_guid_unparse(&var->VendorGuid, p);
+
 	return strlen(name);
 }

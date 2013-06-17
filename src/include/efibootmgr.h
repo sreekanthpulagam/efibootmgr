@@ -52,7 +52,7 @@ typedef struct {
 	unsigned int forcegpt:1;
 	unsigned int set_timeout:1;
 	unsigned int delete_timeout:1;
-	unsigned short int timeout;
+	int timeout;
 } efibootmgr_opt_t;
 
 

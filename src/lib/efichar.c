@@ -72,9 +72,11 @@ unsigned long
 efichar_from_char(efi_char16_t *dest, const char *src, size_t dest_len)
 {
 	int i, src_len = strlen(src);
+
 	for (i=0; i < src_len && i < (dest_len/sizeof(*dest)) - 1; i++) {
 		dest[i] = src[i];
 	}
+
 	dest[i] = 0;
 	return i * sizeof(*dest);
 }

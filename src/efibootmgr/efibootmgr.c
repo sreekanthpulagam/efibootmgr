@@ -88,8 +88,18 @@ static void
 fill_var(efi_variable_t *var, const char *name)
 {
 	efi_guid_t guid = EFI_GLOBAL_VARIABLE;
+        efi_char16_t *buffer;
+        int len = strlen(name);
 
-	efichar_from_char(var->VariableName, name, 1024);
+        buffer = malloc(sizeof(efi_char16_t) *(len + 1));
+        if (!buffer) {
+            fprintf(stderr, "ERROR - no buffer malloc'ed\n");
+            return;
+        }
+
+        var->VariableName = buffer;
+	efichar_from_char((efi_char16_t *)var->VariableName, name, (len + 1) * 2);
+
 	memcpy(&var->VendorGuid, &guid, sizeof(guid));
 	var->Attributes = EFI_VARIABLE_NON_VOLATILE
 		| EFI_VARIABLE_BOOTSERVICE_ACCESS
@@ -126,7 +136,6 @@ read_vars(struct dirent **namelist,
 			entry = malloc(sizeof(var_entry_t));
 			if (!entry) return;
 			memset(entry, 0, sizeof(var_entry_t));
-
 			status = read_variable(namelist[i]->d_name,
 					       &entry->var_data);
 			if (status != EFI_SUCCESS) break;
@@ -394,30 +403,50 @@ delete_var(const char *name)
 	return delete_variable(&var);
 }
 
+void
+free_var(efi_variable_t *var)
+{
+     if (var->VariableName)
+         free(var->VariableName);
+     if (var->Data)
+         free(var->Data);
+}
+
 static int
 read_boot_u16(const char *name)
 {
 	efi_status_t status;
 	efi_variable_t var;
-	uint16_t *n = (uint16_t *)(var.Data);
+        int value;
 
 	memset(&var, 0, sizeof(var));
 	status = read_boot(&var, name);
-	if (status) return -1;
-	return *n;
+
+	if (status) 
+             value = -1;
+        else 
+	     value = *(var.Data);
+
+        free_var(&var);
+        return value;
 }
 
 static efi_status_t
 set_boot_u16(const char *name, uint16_t num)
 {
 	efi_variable_t var;
-	uint16_t *n = (uint16_t *)var.Data;
+        uint8_t *buffer;
+        int  bufsize = 2;          // have to manually track buffer size, no portable way
 
 	memset(&var, 0, sizeof(var));
-
 	fill_var(&var, name);
-	*n = num;
-	var.DataSize = sizeof(uint16_t);
+        
+        buffer = malloc(bufsize);
+        *buffer = num;
+        *(buffer + 1) = 0;
+        var.Data = buffer;
+	var.DataSize = bufsize;
+
 	return create_or_edit_variable(&var);
 }
 
@@ -581,16 +610,18 @@ find_disk_blk(char *disk_name, list_t *blk_list)
 #endif
 
 static void
-unparse_boot_order(uint16_t *order, int length)
+unparse_boot_order(uint8_t *order, int length)
 {
-	int i;
-	printf("BootOrder: ");
-	for (i=0; i<length; i++) {
-		printf("%04X", order[i]);
-		if (i < (length-1))
-			printf(",");
-	}
-	printf("\n");
+    int i;
+    int len = length/2;
+
+    printf("BootOrder: ");
+    for (i=0; i < length; i+=2) {
+        printf("%02X%02X", order[i+1], order[i]);
+        if (i < (len))
+            printf(",");
+    }
+    printf("\n");
 }
 
 static int
@@ -711,7 +742,6 @@ show_boot_order()
 {
 	efi_status_t status;
 	efi_variable_t boot_order;
-	uint16_t *data;
 
 	status = read_boot_order(&boot_order);
 
@@ -720,13 +750,8 @@ show_boot_order()
 		return;
 	}
 
-	/* We've now got an array (in boot_order.Data) of the
-	   boot order.  First add our entry, then copy the old array.
-	*/
-	data = (uint16_t *)&(boot_order.Data);
 	if (boot_order.DataSize)
-		unparse_boot_order(data, boot_order.DataSize / sizeof(uint16_t));
-
+	    unparse_boot_order(boot_order.Data, boot_order.DataSize);
 }
 
 static efi_status_t
@@ -1050,7 +1075,6 @@ main(int argc, char **argv)
 
 	if (!opts.testfile)
 		set_fs_kernel_calls();
-
 	if (!opts.testfile) {
 		num_boot_names = read_boot_var_names(&boot_names);
 		read_vars(boot_names, num_boot_names, &boot_entry_list);

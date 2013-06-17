@@ -96,12 +96,12 @@ typedef uint8_t  efi_bool_t;
 typedef uint16_t efi_char16_t;		/* UNICODE character */
 
 typedef struct _efi_variable_t {
-        efi_char16_t  VariableName[1024/sizeof(efi_char16_t)];
-        efi_guid_t    VendorGuid;
-        unsigned long DataSize;
-        uint8_t          Data[1024];
-	efi_status_t  Status;
-        uint32_t         Attributes;
+    efi_char16_t  *VariableName;
+    efi_guid_t    VendorGuid;
+    unsigned long DataSize;
+    uint8_t       *Data;
+    efi_status_t  Status;
+    uint32_t      Attributes;
 } __attribute__((packed)) efi_variable_t;
 
 
