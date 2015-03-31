@@ -965,6 +965,7 @@ usage()
 	printf("\t-b | --bootnum XXXX   modify BootXXXX (hex)\n");
 	printf("\t-B | --delete-bootnum delete bootnum (hex)\n");
 	printf("\t-c | --create         create new variable bootnum and add to bootorder\n");
+	printf("\t-C | --create-only	create new variable bootnum and do not add to bootorder\n");
 	printf("\t-D | --remove-dups	remove duplicate values from BootOrder\n");
 	printf("\t-d | --disk disk       (defaults to /dev/sda) containing loader\n");
 	printf("\t-e | --edd [1|3|-1]   force EDD 1.0 or 3.0 creation variables, or guess\n");
@@ -1026,6 +1027,7 @@ parse_opts(int argc, char **argv)
 			{"bootnum",          required_argument, 0, 'b'},
 			{"delete-bootnum",         no_argument, 0, 'B'},
 			{"create",                 no_argument, 0, 'c'},
+			{"create-only",		   no_argument, 0, 'C'},
 			{"remove-dups",            no_argument, 0, 'D'},
 			{"disk",             required_argument, 0, 'd'},
 			{"iface",            required_argument, 0, 'i'},
@@ -1098,6 +1100,10 @@ parse_opts(int argc, char **argv)
 		}
 		case 'c':
 			opts.create = 1;
+			break;
+		case 'C':
+			opts.create = 1;
+			opts.no_boot_order = 1;
 			break;
 		case 'D':
 			opts.deduplicate = 1;
@@ -1331,7 +1337,7 @@ main(int argc, char **argv)
 			err(5, "Could not prepare boot variable");
 
 		/* Put this boot var in the right BootOrder */
-		if (new_boot)
+		if (new_boot && !opts.no_boot_order)
 			ret=add_to_boot_order(new_boot->num);
 		if (ret < 0)
 			err(6, "Could not add entry to BootOrder");
