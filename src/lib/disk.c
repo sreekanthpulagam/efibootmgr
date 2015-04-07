@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <efivar.h>
+#include <efiboot.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -272,7 +273,7 @@ disk_get_scsi_pci(int fd,
 		return 1;
 	}
 
-	rc = efi_get_scsi_pci(usefd, slot_name, sizeof slot_name);
+	rc = efi_linux_scsi_pci(usefd, slot_name, sizeof slot_name);
 	if (rc) {
 		perror("get_scsi_pci");
 		return rc;

@@ -93,7 +93,7 @@ typedef struct _gpt_entry {
 	uint64_t starting_lba;
 	uint64_t ending_lba;
 	gpt_entry_attributes attributes;
-	efi_char16_t partition_name[72 / sizeof(efi_char16_t)];
+	uint16_t partition_name[72 / sizeof(uint16_t)];
 } __attribute__ ((packed)) gpt_entry;
 
 

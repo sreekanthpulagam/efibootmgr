@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <efiboot.h>
 #include <efivar.h>
 #include <errno.h>
 #include <stdint.h>
@@ -41,7 +42,7 @@
 #include <asm/types.h>
 #include <linux/ethtool.h>
 #include "efi.h"
-#include "efichar.h"
+#include "ucs2.h"
 #include "disk.h"
 #include "efibootmgr.h"
 #include "list.h"
@@ -169,7 +170,7 @@ static struct device *
 is_parent_bridge(struct pci_dev *p, unsigned int target_bus)
 {
 	struct device *d;
- 	unsigned int primary __attribute__((unused)), secondary;
+	unsigned int primary __attribute__((unused)), secondary;
 
 	if ( (pci_read_word(p, PCI_HEADER_TYPE) & 0x7f) != PCI_HEADER_TYPE_BRIDGE)
 		return NULL;
@@ -269,11 +270,11 @@ make_edd30_device_path(int fd, uint8_t *buf, size_t size)
 	rc = disk_get_pci(fd, &interface_type, &bus, &device, &function);
 	if (rc) return 0;
 	if (interface_type == nvme) {
-		rc = efi_get_nvme_ns_id(fd, &ns_id);
+		rc = efi_linux_nvme_ns_id(fd, &ns_id);
 		if (rc < 0)
 			return 0;
 	} else if (interface_type != virtblk) {
-		rc = efi_get_scsi_idlun(fd, &host, &channel, &id, &lun);
+		rc = efi_linux_scsi_idlun(fd, &host, &channel, &id, &lun);
 		if (rc < 0)
 			return 0;
 	}
@@ -548,11 +549,8 @@ ssize_t
 make_linux_load_option(uint8_t **data, size_t *data_size,
 		       uint8_t *optional_data, size_t optional_data_size)
 {
-	efi_char16_t description[64];
 	uint8_t *buf;
 	ssize_t needed;
-	off_t buf_offset = 0, desc_offset;
-	int rc;
 	uint32_t attributes = opts.active ? LOAD_OPTION_ACTIVE : 0;
 	efidp dp = NULL;
 
@@ -569,7 +567,7 @@ err:
 			goto err;
 		}
 
-		needed = make_net_load_option(opts.iface, dp, needed);
+		needed = make_net_load_option(opts.iface, (uint8_t *)dp, needed);
 		if (needed < 0)
 			goto err;
 	} else {
@@ -581,7 +579,7 @@ err:
 			needed = -1;
 			goto err;
 		}
-		needed = make_disk_load_option(opts.iface, dp, needed);
+		needed = make_disk_load_option(opts.iface, (uint8_t *)dp, needed);
 		if (needed < 0)
 			goto err;
 	}
@@ -606,201 +604,50 @@ err:
 	return needed;
 }
 
-/*
- * append_extra_args()
- * appends all arguments from argv[] not snarfed by getopt
- * as one long string onto data.
- */
-static int
-append_extra_args_ascii(uint8_t **data, size_t *data_size)
+ssize_t
+get_extra_args(uint8_t *data, ssize_t data_size)
 {
-	uint8_t *new_data = NULL;
-	char *p;
 	int i;
-	unsigned long usedchars=0;
-
-	if (!data || *data) {
-		errno = EINVAL;
-		return -1;
-	}
-
-	for (i=opts.optind; i < opts.argc; i++)	{
-		int l = strlen(opts.argv[i]);
-		int space = (i < opts.argc - 1) ? 1: 0;
-		uint8_t *tmp = realloc(new_data, (usedchars + l + space + 1));
-		if (tmp == NULL) {
-			if (new_data)
-				free(new_data);
-			return -1;
-		}
-		new_data = tmp;
-		p = (char *)new_data + usedchars;
-		strcpy(p, opts.argv[i]);
-		usedchars += l;
-		/* Put a space between args */
-		if (space)
-			new_data[usedchars++] = ' ';
-		new_data[usedchars] = '\0';
-	}
-
-	if (!new_data)
-		return 0;
-
-	*data = (uint8_t *)new_data;
-	*data_size = usedchars;
-
-	return 0;
-}
-
-static int
-append_extra_args_unicode(uint8_t **data, size_t *data_size)
-{
-	uint16_t *new_data = NULL, *p;
-	int i;
-	unsigned long usedchars=0;
-
-	if (!data || *data) {
-		errno = EINVAL;
-		return -1;
-	}
-
-	for (i = opts.optind; i < opts.argc; i++) {
-		int l = strlen(opts.argv[i]) + 1;
-		int space = (i < opts.argc - 1) ? 1 : 0;
-		uint16_t *tmp = realloc(new_data, (usedchars + l + space)
-						  * sizeof (*new_data));
-		if (tmp == NULL)
-			return -1;
-		new_data = tmp;
-		p = new_data + usedchars;
-		usedchars += efichar_from_char((efi_char16_t *)p,
-						opts.argv[i], l * 2)
-				/ sizeof (*new_data);
-		p = new_data + usedchars;
-		/* Put a space between args */
-		if (space)
-			usedchars += efichar_from_char(
-						(efi_char16_t *)p, " ", 2)
-				/ sizeof (*new_data);
-	}
-
-	if (!new_data)
-		return 0;
-
-	*data = (uint8_t *)new_data;
-	*data_size = usedchars * sizeof (*new_data);
-
-	return 0;
-}
-
-static int
-append_extra_args_file(uint8_t **data, size_t *data_size)
-{
-	char *file = opts.extra_opts_file;
-	int fd = STDIN_FILENO;
-	ssize_t num_read=0;
-	unsigned long appended=0;
-	size_t maxchars = 1024;
-	char *buffer;
-
-	if (!data || *data) {
-		errno = EINVAL;
-		return -1;
-	}
-
-	if (file && strncmp(file, "-", 1))
-		fd = open(file, O_RDONLY);
-
-	if (fd < 0)
-		return -1;
-
-	buffer = malloc(maxchars);
-	do {
-		if (maxchars - appended == 0) {
-			maxchars += 1024;
-			char *tmp = realloc(buffer, maxchars);
-			if (tmp == NULL)
-				return -1;
-			buffer = tmp;
-		}
-		num_read = read(fd, buffer + appended, maxchars - appended);
-		if (num_read < 0) {
-			free(buffer);
-			return -1;
-		} else if (num_read > 0) {
-			appended += num_read;
-		}
-	} while (num_read > 0);
-
-	if (fd != STDIN_FILENO)
-		close(fd);
-
-	*data = (uint8_t *)buffer;
-	*data_size = appended;
-
-	return appended;
-}
-
-static int
-add_new_data(uint8_t **data, size_t *data_size,
-		uint8_t *new_data, size_t new_data_size)
-{
-	uint8_t *tmp = realloc(*data, *data_size + new_data_size);
-	if (tmp == NULL)
-		return -1;
-	memcpy(tmp + *data_size, new_data, new_data_size);
-	*data = tmp;
-	*data_size = *data_size + new_data_size;
-	return 0;
-}
-
-int
-append_extra_args(uint8_t **data, size_t *data_size)
-{
-	int ret = 0;
-	uint8_t *new_data = NULL;
-	size_t new_data_size = 0;
+	ssize_t needed = 0, sz;
+	off_t off = 0;
 
 	if (opts.extra_opts_file) {
-		ret = append_extra_args_file(&new_data, &new_data_size);
-		if (ret < 0) {
-			fprintf(stderr, "efibootmgr: append_extra_args: %m\n");
+		needed = efi_load_option_args_from_file(data, data_size,
+						     opts.extra_opts_file);
+		if (needed < 0) {
+			fprintf(stderr, "efibootmgr: get_extra_args: %m\n");
 			return -1;
 		}
 	}
-	if (new_data_size) {
-		ret = add_new_data(data, data_size, new_data, new_data_size);
-		free(new_data);
-		if (ret < 0) {
-			fprintf(stderr, "efibootmgr: append_extra_args: %m\n");
-			return -1;
-		}
-		new_data = NULL;
-		new_data_size = 0;
-	}
+	for (i = opts.optind; i < opts.argc; i++) {
+		int space = (i < opts.argc - 1) ? 1 : 0;
 
-	if  (opts.unicode)
-		ret = append_extra_args_unicode(&new_data, &new_data_size);
-	else
-		ret = append_extra_args_ascii(&new_data, &new_data_size);
-	if (ret < 0) {
-		fprintf(stderr, "efibootmgr: append_extra_args: %m\n");
-		if (new_data) /* this can't happen, but covscan believes */
-			free(new_data);
-		return -1;
-	}
-	if (new_data_size) {
-		ret = add_new_data(data, data_size, new_data, new_data_size);
-		free(new_data);
-		new_data = NULL;
-		if (ret < 0) {
-			fprintf(stderr, "efibootmgr: append_extra_args: %m\n");
-			return -1;
+		if (opts.unicode) {
+			sz = efi_load_option_args_as_ucs2(
+						(uint16_t *)(data+off),
+						data_size?data_size+off:0,
+						opts.argv[i]);
+			if (sz < 0)
+				return -1;
+			off += sz;
+			if (data && off < data_size-2 && space) {
+				data[off] = '\0';
+				data[off+1] = '\0';
+			}
+			off += space * sizeof (uint16_t);
+		} else {
+			sz = efi_load_option_args_as_utf8(data+off,
+						data_size?data_size+off:0,
+						opts.argv[i]);
+			if (sz < 0)
+				return -1;
+			off += sz;
+			if (data && off < data_size-1 && space) {
+				data[off] = '\0';
+			}
+			off += space;
 		}
-		new_data_size = 0;
+		needed += off;
 	}
-
-	if (new_data) /* once again, this can't happen, but covscan believes */
-		free(new_data);
-	return 0;
+	return needed;
 }
